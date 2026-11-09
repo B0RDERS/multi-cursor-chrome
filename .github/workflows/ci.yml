@@ -1,0 +1,130 @@
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, closed]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.action == 'closed' && format('release-{0}', github.event.pull_request.number) || github.ref }}
+  cancel-in-progress: ${{ github.event.action != 'closed' }}
+
+jobs:
+  check:
+    name: Check and build
+    if: >-
+      github.event.action != 'closed' ||
+      (github.event.pull_request.merged == true &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       startsWith(github.event.pull_request.head.ref, 'release/v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      artifact-name: ${{ steps.metadata.outputs.artifact-name }}
+      archive-name: ${{ steps.metadata.outputs.archive-name }}
+      release-tag: ${{ steps.metadata.outputs.release-tag }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6.1.0
+        with:
+          ref: ${{ github.event.action == 'closed' && github.event.pull_request.merge_commit_sha || github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check formatting, types, build, and tests
+        run: npm run check
+
+      - name: Validate versions and name the build
+        id: metadata
+        if: github.event_name == 'push' || startsWith(github.event.pull_request.head.ref, 'release/')
+        env:
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            npm run release:check
+          else
+            tag="${HEAD_BRANCH#release/}"
+            npm run release:check -- "$tag"
+            echo "release-tag=$tag" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload tested extension
+        if: github.event_name == 'push' || startsWith(github.event.pull_request.head.ref, 'release/')
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.metadata.outputs.artifact-name }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub release
+    if: github.event.action == 'closed' && needs.check.outputs.release-tag != ''
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      # This job never checks out or executes repository code with a write token.
+      - name: Download the tested extension
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.check.outputs.artifact-name }}
+          path: extension
+
+      - name: Create, sign, and verify extension archive
+        env:
+          ARCHIVE_NAME: ${{ needs.check.outputs.archive-name }}
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          : "${RELEASE_SIGNING_KEY:?Set the RELEASE_SIGNING_KEY GitHub Actions secret}"
+          umask 077
+          key=$(mktemp)
+          public_key=$(mktemp)
+          trap 'rm -f "$key" "$public_key"' EXIT
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$key"
+          unset RELEASE_SIGNING_KEY
+
+          (cd extension && zip -X -r "../$ARCHIVE_NAME" .)
+          unzip -t "$ARCHIVE_NAME"
+          openssl dgst -sha256 -sign "$key" -out "$ARCHIVE_NAME.sig" "$ARCHIVE_NAME"
+          openssl pkey -in "$key" -pubout -out "$public_key"
+          openssl dgst -sha256 -verify "$public_key" -signature "$ARCHIVE_NAME.sig" "$ARCHIVE_NAME"
+          sha256sum "$ARCHIVE_NAME" > "$ARCHIVE_NAME.sha256"
+
+      - name: Publish release with tested files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.check.outputs.release-tag }}
+          RELEASE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          ARCHIVE_NAME: ${{ needs.check.outputs.archive-name }}
+        run: |
+          if ! gh api "repos/$GH_REPO/git/refs" \
+            -f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_SHA" >/dev/null; then
+            existing_sha=$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)
+            if [[ "$existing_sha" != "$RELEASE_SHA" ]]; then
+              echo "Tag $RELEASE_TAG points to a different commit." >&2
+              exit 1
+            fi
+          fi
+          gh release create "$RELEASE_TAG" \
+            "$ARCHIVE_NAME" "$ARCHIVE_NAME.sig" "$ARCHIVE_NAME.sha256" \
+            --verify-tag \
+            --title "$RELEASE_TAG" \
+            --generate-notes

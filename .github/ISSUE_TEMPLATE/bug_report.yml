@@ -1,0 +1,39 @@
+name: Bug report
+description: Report a reproducible problem with textarea editing.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For security vulnerabilities, follow docs/SECURITY.md and use private reporting. Do not include private form text, credentials, or private URLs here.
+  - type: input
+    id: version
+    attributes:
+      label: Extension version or commit
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS and Chrome versions
+      placeholder: e.g. Windows 11, Chrome 142
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include exact key combinations, whether Home is affected, and a minimal example using synthetic text.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
