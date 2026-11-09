@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <g id="cursors">
+      <line x1="32" y1="24" x2="32" y2="66" />
+      <line x1="24" y1="24" x2="40" y2="24" />
+      <line x1="24" y1="66" x2="40" y2="66" />
+      <line x1="64" y1="42.475208614" x2="64" y2="84.475208614" />
+      <line x1="56" y1="42.475208614" x2="72" y2="42.475208614" />
+      <line x1="56" y1="84.475208614" x2="72" y2="84.475208614" />
+      <line x1="96" y1="60.950417228" x2="96" y2="102.950417228" />
+      <line x1="88" y1="60.950417228" x2="104" y2="60.950417228" />
+      <line x1="88" y1="102.950417228" x2="104" y2="102.950417228" />
+    </g>
+  </defs>
+  <g fill="none" stroke-linecap="round">
+    <use href="#cursors" stroke="white" stroke-width="15" />
+    <use href="#cursors" stroke="black" stroke-width="8" />
+  </g>
+</svg>

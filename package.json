@@ -1,0 +1,25 @@
+{
+  "name": "multi-cursor-chrome",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Adds multi-cursor editing to textareas",
+  "scripts": {
+    "build": "tsc --noEmit && node --experimental-strip-types src/build/build.ts",
+    "check": "prettier --check . && npm run build && node --experimental-strip-types --test tests/*.test.ts",
+    "format": "prettier --write .",
+    "release:check": "node --experimental-strip-types src/build/release.ts"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.0",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.25.0",
+    "html-minifier": "^5.0.1",
+    "prettier": "^3.9.10",
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "license": "MIT"
+}

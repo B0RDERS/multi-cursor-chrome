@@ -1,0 +1,135 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Check and build release
+    if: github.ref == 'refs/heads/main'
+    outputs:
+      artifact-name: ${{ steps.metadata.outputs.artifact-name }}
+      archive-name: ${{ steps.metadata.outputs.archive-name }}
+      release-tag: ${{ steps.metadata.outputs.release-tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check formatting, types, build, and tests
+        run: npm run check
+
+      - name: Validate and name the release
+        id: metadata
+        run: |
+          tag="v$(node -p "require('./package.json').version")"
+          npm run release:check -- "$tag"
+          echo "release-tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Upload tested extension
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.metadata.outputs.artifact-name }}
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # This job never checks out or executes repository code with a write token.
+      - name: Download the tested extension
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: extension
+
+      - name: Pack signed Chrome extension
+        env:
+          ARCHIVE_NAME: ${{ needs.build.outputs.archive-name }}
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          : "${RELEASE_SIGNING_KEY:?Set the RELEASE_SIGNING_KEY GitHub Actions secret}"
+          umask 077
+          pack_dir=$(mktemp -d)
+          trap 'rm -rf "$pack_dir"' EXIT
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$pack_dir/key.pem"
+          unset RELEASE_SIGNING_KEY
+
+          xvfb-run -a google-chrome --user-data-dir="$pack_dir/profile" \
+            --pack-extension="$PWD/extension" \
+            --pack-extension-key="$pack_dir/key.pem"
+          test -s extension.crx
+          mv extension.crx "$ARCHIVE_NAME"
+
+      - name: Archive unpacked extension
+        env:
+          ARCHIVE_NAME: ${{ needs.build.outputs.archive-name }}
+        working-directory: extension
+        run: zip -qr "../${ARCHIVE_NAME%.crx}.zip" .
+
+      - name: Publish release with tested files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.build.outputs.release-tag }}
+          RELEASE_SHA: ${{ github.sha }}
+          ARCHIVE_NAME: ${{ needs.build.outputs.archive-name }}
+        run: |
+          gh api "repos/$GH_REPO/contents/docs/CHANGELOG.md?ref=$RELEASE_SHA" \
+            -H 'Accept: application/vnd.github.raw+json' > changelog.md
+          awk -v heading="## ${RELEASE_TAG#v}" '
+            { sub(/\r$/, "") }
+            $0 == heading { section = 1; next }
+            section && /^## / { exit }
+            section && (body || /[^[:space:]]/) { body = 1; print }
+            END { if (!body) exit 1 }
+          ' changelog.md > release-changes.md || {
+            echo "Missing changelog entry for $RELEASE_TAG." >&2
+            exit 1
+          }
+          { printf "## What's Changed\n\n"; cat release-changes.md; } > release-notes.md
+
+          # A tag name identifies a single ref. Updating it removes the old association.
+          tag_ref="refs/tags/$RELEASE_TAG"
+          existing_ref=$(gh api "repos/$GH_REPO/git/matching-refs/tags/$RELEASE_TAG" \
+            --jq ".[] | select(.ref == \"$tag_ref\") | .ref")
+          if [[ -z "$existing_ref" ]]; then
+            gh api "repos/$GH_REPO/git/refs" \
+              -f ref="$tag_ref" -f sha="$RELEASE_SHA" >/dev/null
+          elif [[ "$(gh api "repos/$GH_REPO/commits/$tag_ref" --jq .sha)" != "$RELEASE_SHA" ]]; then
+            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/$RELEASE_TAG" \
+              -f sha="$RELEASE_SHA" -F force=true >/dev/null
+          fi
+
+          zip_name="${ARCHIVE_NAME%.crx}.zip"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$ARCHIVE_NAME" "$zip_name" --clobber
+            gh release edit "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file release-notes.md
+          else
+            gh release create "$RELEASE_TAG" "$ARCHIVE_NAME" "$zip_name" \
+              --verify-tag --title "$RELEASE_TAG" --notes-file release-notes.md
+          fi

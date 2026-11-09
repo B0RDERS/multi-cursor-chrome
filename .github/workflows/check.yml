@@ -1,0 +1,59 @@
+name: Check
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check formatting, types, build, and tests
+        run: npm run check
+
+      - name: Validate versions and name the build
+        id: metadata
+        if: github.event_name == 'push' || startsWith(github.event.pull_request.head.ref, 'release/')
+        env:
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            npm run release:check
+          else
+            tag="${HEAD_BRANCH#release/}"
+            npm run release:check -- "$tag"
+          fi
+
+      - name: Upload tested extension
+        if: github.event_name == 'push' || startsWith(github.event.pull_request.head.ref, 'release/')
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.metadata.outputs.artifact-name }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
